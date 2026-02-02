@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "piper-lerobot"
+version = "0.1.0"
+description = "LeRobot integration for AgileX Piper robotic arm"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "Inhyeok Hwang", email = "hwai566877@naver.com" }
+]
+
+dependencies = [
+    "lerobot",
+    "piper_sdk",
+    "numpy",
+]
+
+[tool.setuptools]
+packages = ["piper_robot"]

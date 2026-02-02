@@ -6,9 +6,9 @@ from lerobot.cameras.opencv import OpenCVCameraConfig
 @RobotConfig.register_subclass("piper") # CLI
 @dataclass
 class PiperRobotConfig(RobotConfig):
+    port: str    
     interface: str = "can"
     can_channel: str = "can0"
-    port: str
     cameras: dict[str, CameraConfig] = field(
         default_factory={
             "cam_1": OpenCVCameraConfig(
