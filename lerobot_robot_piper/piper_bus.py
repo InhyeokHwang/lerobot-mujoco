@@ -6,7 +6,7 @@ import time
 
 from .piper_sdk_adapter import PiperSdkAdapter
 
-from lerobot.motors.motors_bus import MotorsBusBase, Motor, NameOrID, Value
+from lerobot.motors.motors_bus import MotorsBusBase, Motor, MotorCalibration, NameOrID, Value
 from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 
 logger = logging.getLogger(__name__)
@@ -114,6 +114,24 @@ class PiperMotorsBus(MotorsBusBase):
         """
         pass
 
+    # ---- calibration (LeRobot interface requirement) ----
+    def read_calibration(self) -> dict[str, MotorCalibration]:
+        """
+        Piper는 SDK가 절대각(deg)을 제공하므로 별도 모터 캘리브레이션을 사용하지 않음.
+        LeRobot 추상 메서드 요구사항 때문에 빈 dict 반환.
+        """
+        return {}
+
+    def write_calibration(self, calibration_dict: dict[str, MotorCalibration], cache: bool = True) -> None:
+        """
+        Piper는 캘리브레이션을 적용하지 않지만,
+        cache=True면 LeRobot 쪽에서 참조할 수 있게 self.calibration에 저장만 해둠.
+        """
+        if cache:
+            self.calibration.update(calibration_dict)
+
+
+
     # ---- read API (LeRobot 표준 key) ----
     def read(self, data_name: str, motor: str) -> Value:
         if not self.is_connected:
@@ -194,9 +212,23 @@ class PiperMotorsBus(MotorsBusBase):
         if not isinstance(values, dict):
             raise TypeError("sync_write expects dict[str, Value] for Piper")
 
-        # SDK 각도(deg)를 그대로 전송 (calibration/clip 없음)
         targets: dict[int, float] = {}
-        for name, goal_deg in values.items():
-            targets[self.motors[name].id] = float(goal_deg)
+        gripper_norm: float | None = None
 
-        self._sdk.send_joint_positions_deg(targets)
+        for name, v in values.items():
+            if name == "gripper":
+                gripper_norm = float(v)
+            else:
+                targets[self.motors[name].id] = float(v)
+
+        if targets:
+            self._sdk.send_joint_positions_deg(targets)
+
+        if gripper_norm is not None:
+            # 0~1 클램프
+            g = max(0.0, min(1.0, gripper_norm))
+
+            # config가 bus엔 없으니: bus에서 mm 범위를 들고 있게 하거나,
+            # follower가 mm로 변환해서 bus에 넘기는 방식 중 하나를 택해야 함.
+            # => 추천: follower가 변환하고 bus는 mm를 받기
+            raise RuntimeError("PiperMotorsBus expects gripper in mm; convert in PiperFollower")

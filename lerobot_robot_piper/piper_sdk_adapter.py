@@ -2,6 +2,7 @@ import logging
 import math
 import subprocess
 from typing import Optional
+from pathlib import Path
 
 from piper_sdk import C_PiperInterface_V2
 from lerobot.utils.errors import DeviceNotConnectedError
@@ -22,7 +23,7 @@ class PiperSdkAdapter:
     def __init__(self, port: str):
         # port is CAN channel name like "can0"
         self.port = port
-        self.can_setup_script = "./can_activate.sh"
+        self.can_setup_script = str(Path(__file__).resolve().parent / "can_activate.sh")
         self._connected = False
 
         # Pass can_name explicitly (C_PiperInterface_V2 uses can_name internally) :contentReference[oaicite:8]{index=8}
@@ -209,3 +210,33 @@ class PiperSdkAdapter:
         j6 = to_mdeg(self._last_targets_deg[6])
 
         self.interface.JointCtrl(j1, j2, j3, j4, j5, j6)  # :contentReference[oaicite:18]{index=18}
+
+
+    # ---- gripper ----
+    def enable_gripper(self, clear_error: bool = False) -> None:
+        if not self.is_connected:
+            raise DeviceNotConnectedError("Device not connected")
+        code = 0x03 if clear_error else 0x01
+        # angle/effort은 현재값 유지 목적이면 0으로 보내도 SDK가 limit 처리함
+        self.interface.GripperCtrl(gripper_angle=0, gripper_effort=0, gripper_code=code, set_zero=0x00)
+
+    def disable_gripper(self, clear_error: bool = False) -> None:
+        if not self.is_connected:
+            raise DeviceNotConnectedError("Device not connected")
+        code = 0x02 if clear_error else 0x00
+        self.interface.GripperCtrl(gripper_angle=0, gripper_effort=0, gripper_code=code, set_zero=0x00)
+
+    def send_gripper_mm(self, target_mm: float, effort_n: float = 2.0, enable: bool = True) -> None:
+        if not self.is_connected:
+            raise DeviceNotConnectedError("Device not connected")
+
+        mm_milli = int(round(target_mm * 1000.0))  # 0.001mm
+        eff_milli = int(round(max(0.0, min(5.0, effort_n)) * 1000.0))  # 0.001N/m
+
+        code = 0x01 if enable else 0x00
+        self.interface.GripperCtrl(
+            gripper_angle=mm_milli,
+            gripper_effort=eff_milli,
+            gripper_code=code,
+            set_zero=0x00,
+        )
