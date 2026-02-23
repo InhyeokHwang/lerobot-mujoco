@@ -25,7 +25,7 @@ from mink_ik.quest3_utils import (
     T_from_pos_quat_xyzw,
     set_mocap_from_T,
     T_from_mocap,
-    R_Y_PI,
+    CTRL2EE_LEFT, CTRL2EE_RIGHT
 )
 
 _HERE = Path(__file__).parent
@@ -137,7 +137,7 @@ def main():
     # Quest3 input
     teleop = Quest3Teleop()
 
-    follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=R_Y_PI)
+    follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
     follow_right = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
 
     # episode logic
@@ -178,6 +178,10 @@ def main():
             # controller 4x4 homogeneous transform
             T_ctrl_L = T_from_pos_quat_xyzw(frame.left_pose.pos, frame.left_pose.quat)
             T_ctrl_R = T_from_pos_quat_xyzw(frame.right_pose.pos, frame.right_pose.quat)
+
+            # left controller axis compensation
+            T_ctrl_L = T_ctrl_L @ CTRL2EE_LEFT
+            T_ctrl_R = T_ctrl_R @ CTRL2EE_RIGHT
 
             # mocap
             mocap_l = model.body("target_left").mocapid
