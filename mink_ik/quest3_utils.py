@@ -1,15 +1,17 @@
 import mujoco
 import numpy as np
 
-# left controller flip !!! NEED TO FIX ERROR
-R_Y_PI = np.array([
-    [ -1.0,  0.0,  0.0],
-    [ 0.0,  -1.0,  0.0],
-    [ 0.0,  0.0,  -1.0],
-], dtype=np.float64)
+CTRL2EE_RIGHT = np.eye(4, dtype=np.float64)
+
+CTRL2EE_LEFT = np.eye(4, dtype=np.float64)
+CTRL2EE_LEFT[:3, :3] = np.array([
+    [0.0, 1.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [0.0, 0.0,-1.0],
+], dtype=np.float64) 
+
 
 def _as_int(i) -> int:
-    # mocap_id가 int가 아니라 array([0]) 같은 형태로 와도 안전
     return int(np.asarray(i).reshape(-1)[0])
 
 
@@ -67,16 +69,11 @@ def T_from_mocap(model: mujoco.MjModel, data: mujoco.MjData, mocap_id: int) -> n
 
 
 class Controller:
-    """
-    squeeze ON 순간을 기준으로
-    - 위치: dp를 mocap에 적용
-    - 회전: 컨트롤러의 상대 회전(ΔR)을 mocap 기준 자세에 곱해서 적용
-    """
     def __init__(
         self,
         use_rotation: bool = True,
         pos_scale: float = 1.0,
-        R_fix: np.ndarray | None = None,   # 손별 고정 오프셋(특히 왼손)
+        R_fix: np.ndarray | None = None,   
     ):
         self.use_rotation = use_rotation
         self.pos_scale = float(pos_scale)

@@ -10,7 +10,7 @@ from loop_rate_limiters import RateLimiter
 import mink
 
 from quest3.quest3_teleop import Quest3Teleop
-from .quest3_utils import Controller, T_from_pos_quat_xyzw, set_mocap_from_T, T_from_mocap, R_Y_PI
+from .quest3_utils import Controller, T_from_pos_quat_xyzw, set_mocap_from_T, T_from_mocap, CTRL2EE_LEFT, CTRL2EE_RIGHT
 
 _HERE = Path(__file__).parent
 _XML = _HERE.parent / "description" / "dual_arm" / "scene.xml"
@@ -33,7 +33,6 @@ RATE_HZ = 100.0
 TARGET_RADIUS = 0.03
 TARGET_RGBA_LEFT = [0.1, 0.9, 0.1, 0.9]
 TARGET_RGBA_RIGHT = [0.1, 0.1, 0.9, 0.9]
-
 
 def pick_two_ee_sites(model: mujoco.MjModel) -> Tuple[str, str]:
     common_pairs = [
@@ -262,12 +261,12 @@ def main():
     # tasks
     left_task = mink.FrameTask(
         frame_name=ee_left, frame_type="site",
-        position_cost=1.0, orientation_cost=0.5,
+        position_cost=1.0, orientation_cost=0.6,
         lm_damping=1.0,
     )
     right_task = mink.FrameTask(
         frame_name=ee_right, frame_type="site",
-        position_cost=1.0, orientation_cost=0.5,
+        position_cost=1.0, orientation_cost=0.6,
         lm_damping=1.0,
     )
     posture_task = mink.PostureTask(model=model, cost=POSTURE_COST)
@@ -287,7 +286,7 @@ def main():
     teleop = Quest3Teleop()
 
     # controller
-    follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=R_Y_PI)
+    follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
     follow_right = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
 
     def hard_reset() -> None:
@@ -327,6 +326,10 @@ def main():
             # controller pose -> 4x4
             T_ctrl_L = T_from_pos_quat_xyzw(frame.left_pose.pos, frame.left_pose.quat)
             T_ctrl_R = T_from_pos_quat_xyzw(frame.right_pose.pos, frame.right_pose.quat)
+
+            # left controller axis compensation
+            T_ctrl_L = T_ctrl_L @ CTRL2EE_LEFT
+            T_ctrl_R = T_ctrl_R @ CTRL2EE_RIGHT
 
             # mocap pose pose -> 4x4
             mocap_l = model.body("target_left").mocapid
