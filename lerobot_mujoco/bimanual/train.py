@@ -5,7 +5,6 @@ from pathlib import Path
 
 import torch
 
-# ✅ 너 환경 코드 기준 import (lerobot.datasets.*)
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.datasets.utils import dataset_to_policy_features
 from lerobot.datasets.factory import resolve_delta_timestamps
@@ -22,14 +21,13 @@ def parse_args():
     p.add_argument("--out", type=str, default="./ckpt/act_dual_arm", help="Output checkpoint dir")
     p.add_argument("--chunk_size", type=int, default=10)
     p.add_argument("--n_action_steps", type=int, default=10)
-    p.add_argument("--batch_size", type=int, default=256)
+    p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--steps", type=int, default=5000)
     p.add_argument("--log_freq", type=int, default=100)
     p.add_argument("--device", type=str, default="cuda")
     return p.parse_args()
-
 
 def main():
     args = parse_args()
@@ -39,7 +37,7 @@ def main():
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---- Load dataset metadata (for features + stats) ----
+    # load dataset
     meta = LeRobotDatasetMetadata(args.repo_id, root=ds_root)
     policy_features = dataset_to_policy_features(meta.features)
 
@@ -49,15 +47,12 @@ def main():
     # input = everything else (state-only dataset면 observation.environment_state만 남음)
     input_features = {k: ft for k, ft in policy_features.items() if k not in output_features}
 
-    # (안전장치) 혹시 다른 observation 키가 섞였을 때만 남길 것 지정하고 싶으면 여기서 필터링 가능
-    # input_features = {k: ft for k, ft in input_features.items() if k == "observation.environment_state"}
-
     if len(output_features) == 0:
         raise RuntimeError(f"No ACTION feature found. Available: {list(policy_features.keys())}")
     if len(input_features) == 0:
         raise RuntimeError(f"No input features found. Available: {list(policy_features.keys())}")
 
-    # ---- ACT config ----
+    # ACT config
     cfg = ACTConfig(
         input_features=input_features,
         output_features=output_features,
@@ -65,15 +60,15 @@ def main():
         n_action_steps=args.n_action_steps,
     )
 
-    # ---- delta timestamps for action chunking ----
+    # delta timestamps for action chunking
     delta_timestamps = resolve_delta_timestamps(cfg, meta)
 
-    # ---- policy ----
+    # policy
     policy = ACTPolicy(cfg, dataset_stats=meta.stats)
     policy.train()
     policy.to(device)
 
-    # ---- dataset + dataloader ----
+    # dataset + dataloader
     dataset = LeRobotDataset(
         args.repo_id,
         root=ds_root,
@@ -92,7 +87,7 @@ def main():
         drop_last=True,
     )
 
-    # ---- train loop ----
+    # train loop
     step = 0
     done = False
     while not done:
@@ -111,7 +106,7 @@ def main():
                 done = True
                 break
 
-    # ---- save ----
+    # save 
     policy.save_pretrained(str(out_dir))
     print(f"[OK] saved policy -> {out_dir}")
 

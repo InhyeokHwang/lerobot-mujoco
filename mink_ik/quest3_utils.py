@@ -18,7 +18,7 @@ def _as_vec(x, n: int) -> np.ndarray:
     return np.asarray(x, dtype=np.float64).reshape(-1)[:n]
 
 
-def _T_from_pos_quat_xyzw(pos: np.ndarray, quat_xyzw: np.ndarray) -> np.ndarray:
+def T_from_pos_quat_xyzw(pos: np.ndarray, quat_xyzw: np.ndarray) -> np.ndarray:
     """pos(3,), quat_xyzw(4,) -> 4x4. MuJoCo quat is wxyz."""
     pos = _as_vec(pos, 3)
     quat_xyzw = _as_vec(quat_xyzw, 4)
@@ -35,7 +35,7 @@ def _T_from_pos_quat_xyzw(pos: np.ndarray, quat_xyzw: np.ndarray) -> np.ndarray:
     return T
 
 
-def _set_mocap_from_T(data: mujoco.MjData, mocap_id: int, T: np.ndarray) -> None:
+def set_mocap_from_T(data: mujoco.MjData, mocap_id: int, T: np.ndarray) -> None:
     """4x4 -> data.mocap_pos/quat (quat wxyz)"""
     mocap_id = _as_int(mocap_id)
     T = np.asarray(T, dtype=np.float64)
@@ -50,7 +50,7 @@ def _set_mocap_from_T(data: mujoco.MjData, mocap_id: int, T: np.ndarray) -> None
     data.mocap_quat[mocap_id] = q.reshape(4,)
 
 
-def _T_from_mocap(model: mujoco.MjModel, data: mujoco.MjData, mocap_id: int) -> np.ndarray:
+def T_from_mocap(model: mujoco.MjModel, data: mujoco.MjData, mocap_id: int) -> np.ndarray:
     mocap_id = _as_int(mocap_id)
 
     T = np.eye(4, dtype=np.float64)

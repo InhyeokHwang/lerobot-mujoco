@@ -1,5 +1,5 @@
 {
-    "observation.environment_state": {
+    "observation.state": {
         "min": [
             0.3605554401874542,
             0.3255443871021271,

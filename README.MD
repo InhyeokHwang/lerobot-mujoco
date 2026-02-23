@@ -1,7 +1,10 @@
+### quest3 setting
 cd ~/quest3
 mkcert -install
 
 mkcert -cert-file cert.pem -key-file key.pem \
-192.168.219.114 localhost 127.0.0.1
+192.168.xxx.xxx localhost 127.0.0.1
 
-https://192.168.219.114:8012?ws=wss://192.168.219.114:8012
+server url
+https://192.168.xxx.xxx:8012?ws=wss://192.168.xxx.xxx:8012
+

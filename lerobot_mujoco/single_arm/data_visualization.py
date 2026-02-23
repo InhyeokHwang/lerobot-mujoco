@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import argparse
-import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 import mujoco
 import mujoco.viewer
 import numpy as np
-
 from loop_rate_limiters import RateLimiter
 
-from mink_ik.bimanual_mink_ik import (
-    pick_two_ee_sites,
+from mink_ik.single_arm_mink_ik import(
+    pick_ee_site,
     initialize_model,
-    initialize_mocap_targets_to_sites,
+    initialize_mocap_target_to_site
 )
 
 def _vec1(x) -> np.ndarray:
@@ -23,34 +21,29 @@ def _vec1(x) -> np.ndarray:
 def load_episode_npz(ep_path: Path) -> List[Dict[str, Any]]:
     """episode_XXXX.npz -> frames(list[dict])"""
     data = np.load(ep_path, allow_pickle=True)
-    frames_obj = data["frames"]  
+    frames_obj = data["frames"]  # dtype=object array
     frames = list(frames_obj.tolist())
     if not isinstance(frames, list) or (len(frames) > 0 and not isinstance(frames[0], dict)):
         raise ValueError(f"Invalid frames format in {ep_path}")
     return frames
 
-def set_mocap_targets_from_target_state(model: mujoco.MjModel, data: mujoco.MjData, target_state: np.ndarray):
-    target_state = _vec1(target_state) # target_state: [L_pos(3), L_quat_wxyz(4), R_pos(3), R_quat_wxyz(4)] => (14,)
-    if target_state.size < 14:
-        raise ValueError(f"target_state expected size 14, got {target_state.size}")
+def set_mocap_target_from_target_state(model: mujoco.MjModel, data: mujoco.MjData, target_state: np.ndarray):
+    target_state = _vec1(target_state) # target_state (single arm): [pos(3), quat_wxyz(4)] => (7,)
+    if target_state.size < 7:
+        raise ValueError(f"target_state expected size 7, got {target_state.size}")
 
-    lpos = target_state[0:3]
-    lquat = target_state[3:7]
-    rpos = target_state[7:10]
-    rquat = target_state[10:14]
+    pos = target_state[0:3]
+    quat = target_state[3:7]
 
-    mocap_l = model.body("target_left").mocapid
-    mocap_r = model.body("target_right").mocapid
+    mocap_id = model.body("target").mocapid
 
-    data.mocap_pos[mocap_l] = lpos.reshape(3,)
-    data.mocap_quat[mocap_l] = lquat.reshape(4,)
-    data.mocap_pos[mocap_r] = rpos.reshape(3,)
-    data.mocap_quat[mocap_r] = rquat.reshape(4,)
+    data.mocap_pos[mocap_id] = pos.reshape(3,)
+    data.mocap_quat[mocap_id] = quat.reshape(4,)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default="dataset_out", help="directory containing episode_XXXX.npz")
-    parser.add_argument("--episode", type=int, default=0, help="episode index (e.g., 0 -> episode_0000.npz)")
+    parser.add_argument("--data_dir", type=str, default="dataset_out_piper_mujoco", help="dir containing episode_XXXX.npz")
+    parser.add_argument("--episode", type=int, default=0, help="episode index (0 -> episode_0000.npz)")
     parser.add_argument("--hz", type=float, default=20.0, help="replay rate (Hz)")
     parser.add_argument("--loop", action="store_true", help="loop episode forever")
     args = parser.parse_args()
@@ -80,8 +73,8 @@ def main():
     mujoco.mj_forward(model, data)
 
     # EE sites, mocap target init
-    ee_left, ee_right = pick_two_ee_sites(model)
-    initialize_mocap_targets_to_sites(model, data, ee_left, ee_right)
+    ee_left, ee_right = pick_ee_site(model)
+    initialize_mocap_target_to_site(model, data, ee_left, ee_right)
     mujoco.mj_forward(model, data)
 
     rate = RateLimiter(frequency=float(args.hz), warn=False)
@@ -91,20 +84,22 @@ def main():
 
         idx = 0
         while viewer.is_running():
-            frame = frames[idx]
+            fr = frames[idx]
             # robot replay
-            if "action.qpos" in frame:
-                qpos = _vec1(frame["action.qpos"])
+            if "action.qpos" in fr:
+                qpos = _vec1(fr["action.qpos"])
                 if qpos.size != model.nq:
-                    raise ValueError(f"action.qpos size mismatch: got {qpos.size}, expected model.nq={model.nq}")
+                    raise ValueError(
+                        f"action.qpos size mismatch at idx={idx}: got {qpos.size}, expected model.nq={model.nq}"
+                    )
                 data.qpos[:] = qpos
                 if data.qvel.size > 0:
                     data.qvel[:] = 0.0
-    
+
             # target(mocap) replay
-            if "observation.target" in frame:
+            if "observation.target" in fr:
                 try:
-                    set_mocap_targets_from_target_state(model, data, frame["observation.target"])
+                    set_mocap_target_from_target_state(model, data, fr["observation.target"])
                 except Exception as e:
                     print(f"[VIS][WARN] target update failed at idx={idx}: {type(e).__name__}: {e}")
 

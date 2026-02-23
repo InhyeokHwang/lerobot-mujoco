@@ -11,10 +11,10 @@ HERE = Path(__file__).resolve().parent
 NPZ_DIR = (HERE / "dataset_out").resolve()
 
 OUT_PARENT = (HERE / "lerobot_data").resolve()
-REPO_ID = "dual_arm_teleop_npz" # REPO ID for training
+REPO_ID = "single_arm_teleop_npz"
 FPS = 20
 
-TASK_NAME = "dual arm teleop (npz)"
+TASK_NAME = "single arm teleop (npz)"
 
 
 def _as_frame_dict(x) -> Dict[str, Any]:
@@ -66,6 +66,7 @@ def main():
         fps=FPS,
         features=features,
         use_videos=False,
+        # robot_type="piper",  # 필요하면 넣어도 됨
     )
 
     for ep_i, ep_path in enumerate(npz_files):

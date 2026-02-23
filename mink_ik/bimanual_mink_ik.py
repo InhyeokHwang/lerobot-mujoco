@@ -10,7 +10,7 @@ from loop_rate_limiters import RateLimiter
 import mink
 
 from quest3.quest3_teleop import Quest3Teleop
-from .quest3_utils import Controller, _T_from_pos_quat_xyzw, _set_mocap_from_T, _T_from_mocap, R_Y_PI
+from .quest3_utils import Controller, T_from_pos_quat_xyzw, set_mocap_from_T, T_from_mocap, R_Y_PI
 
 _HERE = Path(__file__).parent
 _XML = _HERE.parent / "description" / "dual_arm" / "scene.xml"
@@ -18,7 +18,7 @@ _XML = _HERE.parent / "description" / "dual_arm" / "scene.xml"
 SOLVER = "daqp"
 
 # IK
-POSTURE_COST = 1e-4
+POSTURE_COST = 1e-3
 MAX_ITERS_PER_CYCLE = 20
 DAMPING = 5e-4
 
@@ -104,7 +104,6 @@ def _ensure_mocap_target(spec: mujoco.MjSpec, name: str, rgba: List[float]) -> N
         conaffinity=0,
     )
 
-
 def _load_model(xml_path: Path) -> mujoco.MjModel:
     try:
         spec = mujoco.MjSpec.from_file(xml_path.as_posix())
@@ -123,7 +122,6 @@ def initialize_model() -> Tuple[mujoco.MjModel, mujoco.MjData, mink.Configuratio
     mujoco.mj_forward(model, data)
     configuration = mink.Configuration(model)
     return model, data, configuration
-
 
 def _actuator_joint_id(model: mujoco.MjModel, act_id: int) -> Optional[int]:
     try:
@@ -253,12 +251,11 @@ def main():
     else:
         mujoco.mj_resetData(model, data)
     mujoco.mj_forward(model, data)
-    configuration.update(data.qpos)
+    configuration.update(data.qpos) # fk
 
     # EE sites
     ee_left, ee_right = pick_two_ee_sites(model)
     print(f"[INFO] EE sites: {ee_left}, {ee_right}")
-
     site_left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee_left)
     site_right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee_right)
 
@@ -289,6 +286,7 @@ def main():
     # Quest3 input
     teleop = Quest3Teleop()
 
+    # controller
     follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=R_Y_PI)
     follow_right = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
 
@@ -306,7 +304,6 @@ def main():
         follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=R_Y_PI)
         follow_right = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
         print("[RESET] home + mocap + followers reset")
-
 
     with mujoco.viewer.launch_passive(model=model, data=data, show_left_ui=False, show_right_ui=False) as viewer:
         mujoco.mjv_defaultFreeCamera(model, viewer.cam)
@@ -328,23 +325,23 @@ def main():
                 continue
 
             # controller pose -> 4x4
-            T_ctrl_L = _T_from_pos_quat_xyzw(frame.left_pose.pos, frame.left_pose.quat)
-            T_ctrl_R = _T_from_pos_quat_xyzw(frame.right_pose.pos, frame.right_pose.quat)
+            T_ctrl_L = T_from_pos_quat_xyzw(frame.left_pose.pos, frame.left_pose.quat)
+            T_ctrl_R = T_from_pos_quat_xyzw(frame.right_pose.pos, frame.right_pose.quat)
 
             # mocap pose pose -> 4x4
             mocap_l = model.body("target_left").mocapid
             mocap_r = model.body("target_right").mocapid
-            T_moc_L_now = _T_from_mocap(model, data, mocap_l)
-            T_moc_R_now = _T_from_mocap(model, data, mocap_r)
+            T_moc_L_now = T_from_mocap(model, data, mocap_l)
+            T_moc_R_now = T_from_mocap(model, data, mocap_r)
 
             okL, T_L_des = follow_left.update(frame.left_state.squeeze, T_ctrl_L, T_moc_L_now)
             okR, T_R_des = follow_right.update(frame.right_state.squeeze, T_ctrl_R, T_moc_R_now)
 
             if okL and T_L_des is not None:
-                _set_mocap_from_T(data, mocap_l, T_L_des)
+                set_mocap_from_T(data, mocap_l, T_L_des)
 
             if okR and T_R_des is not None:
-                _set_mocap_from_T(data, mocap_r, T_R_des)
+                set_mocap_from_T(data, mocap_r, T_R_des)
 
             # mocap -> task target
             T_wt_left = mink.SE3.from_mocap_name(model, data, "target_left")
@@ -380,7 +377,6 @@ def main():
                 ori_threshold=ORI_THRESHOLD,
             )
 
-            # render/sleep exactly once per frame
             viewer.sync()
             rate.sleep()
 

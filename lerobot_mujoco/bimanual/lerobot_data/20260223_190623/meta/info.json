@@ -14,7 +14,7 @@
     "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
     "video_path": null,
     "features": {
-        "observation.environment_state": {
+        "observation.state": {
             "dtype": "float32",
             "shape": [
                 14
