@@ -17,7 +17,6 @@ from mink_ik.bimanual_mink_ik import (
     initialize_model,
     build_ctrl_map_for_joints,
     apply_configuration,
-    initialize_mocap_targets_to_sites
 )
 
 from mink_ik.quest3_utils import (
@@ -127,7 +126,8 @@ def main():
     joint2act = build_ctrl_map_for_joints(model)
 
     # init mocap targets to current EE
-    initialize_mocap_targets_to_sites(model, data, ee_left, ee_right)
+    mink.move_mocap_to_frame(model, data, "target_left", ee_left, "site")
+    mink.move_mocap_to_frame(model, data, "target_right", ee_right, "site")
     mujoco.mj_forward(model, data)
 
     # timing
@@ -153,11 +153,12 @@ def main():
             mujoco.mj_resetData(model, data)
         mujoco.mj_forward(model, data)
         configuration.update(data.qpos)
-        initialize_mocap_targets_to_sites(model, data, ee_left, ee_right)
+        mink.move_mocap_to_frame(model, data, "target_left", ee_left, "site")
+        mink.move_mocap_to_frame(model, data, "target_right", ee_right, "site")
         mujoco.mj_forward(model, data)
         dataset.clear_episode_buffer()
         record_flag = False
-        follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=R_Y_PI)
+        follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
         follow_right = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
         print("[RESET] env + episode buffer cleared")
     

@@ -164,81 +164,6 @@ def apply_configuration(
             continue
         data.ctrl[a_id] = float(configuration.q[qadr])
 
-# used for robot initial state
-def initialize_mocap_targets_to_sites(
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-    site_left_name: str,
-    site_right_name: str,
-) -> Tuple[np.ndarray, np.ndarray]:
-    site_left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site_left_name)
-    site_right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site_right_name)
-    if site_left_id < 0 or site_right_id < 0:
-        raise RuntimeError("EE sites not found (check your site names).")
-
-    mocap_l = model.body("target_left").mocapid
-    mocap_r = model.body("target_right").mocapid
-
-    data.mocap_pos[mocap_l] = data.site_xpos[site_left_id].copy()
-    data.mocap_pos[mocap_r] = data.site_xpos[site_right_id].copy()
-
-    ql = np.empty(4, dtype=np.float64)
-    qr = np.empty(4, dtype=np.float64)
-    mujoco.mju_mat2Quat(ql, data.site_xmat[site_left_id])
-    mujoco.mju_mat2Quat(qr, data.site_xmat[site_right_id])
-    data.mocap_quat[mocap_l] = ql
-    data.mocap_quat[mocap_r] = qr
-
-def converge_ik(
-    *,
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-    configuration: mink.Configuration,
-    tasks: list,
-    joint2act: Dict[int, int],
-    frame_dt: float,
-    solver: str,
-    damping: float,
-    max_iters: int,
-    site_left_id: int,
-    site_right_id: int,
-    left_target_pos: np.ndarray,
-    left_target_quat: np.ndarray,
-    right_target_pos: np.ndarray,
-    right_target_quat: np.ndarray,
-    pos_threshold: float,
-    ori_threshold: float,
-) -> bool:
-    if max_iters <= 0:
-        return False
-
-    ik_dt = frame_dt / float(max_iters)
-    reached = False
-
-    for _ in range(max_iters):
-        vel = mink.solve_ik(configuration, tasks, ik_dt, solver, damping)
-        configuration.integrate_inplace(vel, ik_dt)
-
-        apply_configuration(model, data, configuration, joint2act=joint2act)
-        mujoco.mj_step(model, data)
-
-        reached = check_reached(
-            model,
-            data,
-            site_left_id,
-            site_right_id,
-            left_target_pos,
-            left_target_quat,
-            right_target_pos,
-            right_target_quat,
-            pos_threshold,
-            ori_threshold,
-        )
-        if reached:
-            break
-
-    return reached
-
 
 def main():
     model, data, configuration = initialize_model()
@@ -277,7 +202,8 @@ def main():
     joint2act = build_ctrl_map_for_joints(model)
 
     # init mocap targets to current EE
-    initialize_mocap_targets_to_sites(model, data, ee_left, ee_right)
+    mink.move_mocap_to_frame(model, data, "target_left", ee_left, "site")
+    mink.move_mocap_to_frame(model, data, "target_right", ee_right, "site")
     mujoco.mj_forward(model, data)
 
     rate = RateLimiter(frequency=RATE_HZ, warn=False)
@@ -298,9 +224,10 @@ def main():
         mujoco.mj_forward(model, data)
         configuration.update(data.qpos)
         posture_task.set_target_from_configuration(configuration)
-        initialize_mocap_targets_to_sites(model, data, ee_left, ee_right)
+        mink.move_mocap_to_frame(model, data, "target_left", ee_left, "site")
+        mink.move_mocap_to_frame(model, data, "target_right", ee_right, "site")
         mujoco.mj_forward(model, data)
-        follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=R_Y_PI)
+        follow_left  = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
         follow_right = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
         print("[RESET] home + mocap + followers reset")
 
@@ -360,25 +287,29 @@ def main():
             right_target_quat = data.mocap_quat[mocap_r].copy()
 
             #IK
-            converge_ik(
-                model=model,
-                data=data,
-                configuration=configuration,
-                tasks=tasks,
-                joint2act=joint2act,
-                frame_dt=frame_dt,
-                solver=SOLVER,
-                damping=DAMPING,
-                max_iters=MAX_ITERS_PER_CYCLE,
-                site_left_id=site_left_id,
-                site_right_id=site_right_id,
-                left_target_pos=left_target_pos,
-                left_target_quat=left_target_quat,
-                right_target_pos=right_target_pos,
-                right_target_quat=right_target_quat,
-                pos_threshold=POS_THRESHOLD,
-                ori_threshold=ORI_THRESHOLD,
-            )
+            ik_dt = frame_dt / float(MAX_ITERS_PER_CYCLE)
+            reached = False
+            for _ in range(MAX_ITERS_PER_CYCLE):
+                vel = mink.solve_ik(configuration, tasks, ik_dt, SOLVER, DAMPING)
+                configuration.integrate_inplace(vel, ik_dt)
+
+                apply_configuration(model, data, configuration, joint2act=joint2act)
+                mujoco.mj_step(model, data)
+
+                reached = check_reached(
+                    model,
+                    data,
+                    site_left_id,
+                    site_right_id,
+                    left_target_pos,
+                    left_target_quat,
+                    right_target_pos,
+                    right_target_quat,
+                    POS_THRESHOLD,
+                    ORI_THRESHOLD,
+                )
+                if reached:
+                    break
 
             viewer.sync()
             rate.sleep()

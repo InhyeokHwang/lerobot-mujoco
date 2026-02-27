@@ -9,12 +9,13 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+import mink
+
 from loop_rate_limiters import RateLimiter
 
 from mink_ik.bimanual_mink_ik import (
     pick_two_ee_sites,
     initialize_model,
-    initialize_mocap_targets_to_sites,
 )
 
 def _vec1(x) -> np.ndarray:
@@ -81,7 +82,8 @@ def main():
 
     # EE sites, mocap target init
     ee_left, ee_right = pick_two_ee_sites(model)
-    initialize_mocap_targets_to_sites(model, data, ee_left, ee_right)
+    mink.move_mocap_to_frame(model, data, "target_left", ee_left, "site")
+    mink.move_mocap_to_frame(model, data, "target_right", ee_right, "site")
     mujoco.mj_forward(model, data)
 
     rate = RateLimiter(frequency=float(args.hz), warn=False)

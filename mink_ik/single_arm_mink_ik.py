@@ -20,7 +20,7 @@ SOLVER = "daqp"
 # IK
 POSTURE_COST = 1e-3
 MAX_ITERS_PER_CYCLE = 20
-DAMPING = 1e-3  
+DAMPING = 1e-3
 
 # Convergence thresholds
 POS_THRESHOLD = 1e-4
@@ -141,64 +141,7 @@ def apply_configuration(
             continue
         data.ctrl[a_id] = float(configuration.q[qadr])
 
-def initialize_mocap_target_to_site(
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-    site_name: str,
-) -> None:
-    site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site_name)
-    if site_id < 0:
-        raise RuntimeError("EE site not found (check your site name).")
 
-    mocap_id = model.body("target").mocapid
-
-    data.mocap_pos[mocap_id] = data.site_xpos[site_id].copy()
-    q = np.empty(4, dtype=np.float64)
-    mujoco.mju_mat2Quat(q, data.site_xmat[site_id])
-    data.mocap_quat[mocap_id] = q
-
-def converge_ik(
-    *,
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-    configuration: mink.Configuration,
-    tasks: list,
-    joint2act: Dict[int, int],
-    frame_dt: float,
-    solver: str,
-    damping: float,
-    max_iters: int,
-    site_id: int,
-    target_pos: np.ndarray,
-    target_quat: np.ndarray,
-    pos_threshold: float,
-    ori_threshold: float,
-) -> bool:
-    if max_iters <= 0:
-        return False
-
-    ik_dt = frame_dt / float(max_iters)
-    reached = False
-
-    for _ in range(max_iters):
-        vel = mink.solve_ik(configuration, tasks, ik_dt, solver, damping)
-        configuration.integrate_inplace(vel, ik_dt)
-
-        apply_configuration(model, data, configuration, joint2act=joint2act)
-        mujoco.mj_step(model, data)
-
-        reached = check_reached_single(
-            model,
-            data,
-            site_id,
-            target_pos,
-            target_quat,
-            pos_threshold,
-            ori_threshold,
-        )
-        if reached:
-            break
-    return reached
 
 def main():
     model, data, configuration = initialize_model()
@@ -233,7 +176,7 @@ def main():
     joint2act = build_ctrl_map_for_joints(model)
 
     # init mocap target to current EE
-    initialize_mocap_target_to_site(model, data, ee_site)
+    mink.move_mocap_to_frame(model, data, "target", ee_site, "site")
     mujoco.mj_forward(model, data)
 
     rate = RateLimiter(frequency=RATE_HZ, warn=False)
@@ -253,7 +196,7 @@ def main():
         mujoco.mj_forward(model, data)
         configuration.update(data.qpos)
         posture_task.set_target_from_configuration(configuration)
-        initialize_mocap_target_to_site(model, data, ee_site)
+        mink.move_mocap_to_frame(model, data, "target", ee_site, "site")
         mujoco.mj_forward(model, data)
         follow = Controller(use_rotation=True, pos_scale=1.0, R_fix=follow.R_fix)
         print("[RESET] home + mocap + follower reset")
@@ -298,23 +241,27 @@ def main():
             target_quat = data.mocap_quat[mocap_id].copy()
 
             # IK
-            converge_ik(
-                model=model,
-                data=data,
-                configuration=configuration,
-                tasks=tasks,
-                joint2act=joint2act,
-                frame_dt=frame_dt,
-                solver=SOLVER,
-                damping=DAMPING,
-                max_iters=MAX_ITERS_PER_CYCLE,
-                site_id=site_id,
-                target_pos=target_pos,
-                target_quat=target_quat,
-                pos_threshold=POS_THRESHOLD,
-                ori_threshold=ORI_THRESHOLD,
-            )
+            ik_dt = frame_dt / float(MAX_ITERS_PER_CYCLE)
+            reached = False
+            for _ in range(MAX_ITERS_PER_CYCLE):
+                vel = mink.solve_ik(configuration, tasks, ik_dt, SOLVER, DAMPING)
+                configuration.integrate_inplace(vel, ik_dt)
 
+                apply_configuration(model, data, configuration, joint2act=joint2act)
+                mujoco.mj_step(model, data)
+
+                reached = check_reached_single(
+                    model,
+                    data,
+                    site_id,
+                    target_pos,
+                    target_quat,
+                    POS_THRESHOLD,
+                    ORI_THRESHOLD,
+                )
+                if reached:
+                    break
+                
             viewer.sync()
             rate.sleep()
 

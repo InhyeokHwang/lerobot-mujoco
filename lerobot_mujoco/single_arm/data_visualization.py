@@ -6,13 +6,15 @@ from typing import Any, Dict, List
 
 import mujoco
 import mujoco.viewer
+
+import mink
+
 import numpy as np
 from loop_rate_limiters import RateLimiter
 
 from mink_ik.single_arm_mink_ik import(
     pick_ee_site,
     initialize_model,
-    initialize_mocap_target_to_site
 )
 
 def _vec1(x) -> np.ndarray:
@@ -73,8 +75,8 @@ def main():
     mujoco.mj_forward(model, data)
 
     # EE sites, mocap target init
-    ee_left, ee_right = pick_ee_site(model)
-    initialize_mocap_target_to_site(model, data, ee_left, ee_right)
+    ee_site = pick_ee_site(model)
+    mink.move_mocap_to_frame(model, data, "target", ee_site, "site")
     mujoco.mj_forward(model, data)
 
     rate = RateLimiter(frequency=float(args.hz), warn=False)

@@ -18,7 +18,6 @@ from mink_ik.single_arm_mink_ik import (
     initialize_model,                 
     build_ctrl_map_for_joints,       
     apply_configuration,             
-    initialize_mocap_target_to_site,  
 )
 
 from mink_ik.quest3_utils import (
@@ -90,6 +89,10 @@ def main():
     NUM_DEMO = 50
     dataset = EpisodeDataset(out_dir=_HERE / "dataset_out")
 
+    # Quest3 input
+    teleop = Quest3Teleop()
+
+    # MuJoCo model for FK/IK internal representation
     model, data, configuration = initialize_model()
 
     # initial pose
@@ -108,7 +111,7 @@ def main():
     if site_id < 0:
         raise RuntimeError(f"EE site not found in model: {ee_site}")
 
-    # tasks 
+    # IK tasks 
     ee_task = mink.FrameTask(
         frame_name=ee_site,
         frame_type="site",
@@ -123,15 +126,12 @@ def main():
     joint2act = build_ctrl_map_for_joints(model)
 
     # init mocap target to current EE
-    initialize_mocap_target_to_site(model, data, ee_site)
+    mink.move_mocap_to_frame(model, data, "target", ee_site, "site")
     mujoco.mj_forward(model, data)
 
     # timing
     rate = RateLimiter(frequency=RATE_HZ, warn=False)
     rec_accum = 0.0
-
-    # Quest3 input
-    teleop = Quest3Teleop()
 
     # right controller only
     follow = Controller(use_rotation=True, pos_scale=1.0, R_fix=np.eye(3))
@@ -150,7 +150,7 @@ def main():
         configuration.update(data.qpos)
 
         posture_task.set_target_from_configuration(configuration)
-        initialize_mocap_target_to_site(model, data, ee_site, target_body_name="target")
+        mink.move_mocap_to_frame(model, data, "target", ee_site, "site")
         mujoco.mj_forward(model, data)
 
         dataset.clear_episode_buffer()
@@ -245,7 +245,7 @@ def main():
             if rec_accum >= REC_DT:
                 rec_accum -= REC_DT
 
-                # observation/state
+                # observation
                 obs_state = get_obs_state(model, data, site_id)  # (7,)
 
                 # action label: current qpos
