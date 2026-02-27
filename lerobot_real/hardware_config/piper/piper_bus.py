@@ -12,12 +12,6 @@ from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnected
 logger = logging.getLogger(__name__)
 
 class PiperMotorsBus(MotorsBusBase):
-    """
-    Piper용 MotorsBus:
-    - connect/disconnect/torque/read/write/sync_read/sync_write 제공
-    - packet drop 대비 last-known cache 유지
-    - calibration 없음 (SDK가 주는 deg를 그대로 사용)
-    """
     supports_velocity = True
     supports_torque = True
 
@@ -68,7 +62,6 @@ class PiperMotorsBus(MotorsBusBase):
             self._is_connected = True
 
             if handshake:
-                # 가벼운 핸드셰이크: 한 번 읽어서 살아있는지 확인
                 _ = self.sync_read("Present_Position")
             logger.info(f"{self.__class__.__name__} connected on {self.port}")
         except Exception as e:
@@ -116,21 +109,11 @@ class PiperMotorsBus(MotorsBusBase):
 
     # ---- calibration (LeRobot interface requirement) ----
     def read_calibration(self) -> dict[str, MotorCalibration]:
-        """
-        Piper는 SDK가 절대각(deg)을 제공하므로 별도 모터 캘리브레이션을 사용하지 않음.
-        LeRobot 추상 메서드 요구사항 때문에 빈 dict 반환.
-        """
         return {}
 
     def write_calibration(self, calibration_dict: dict[str, MotorCalibration], cache: bool = True) -> None:
-        """
-        Piper는 캘리브레이션을 적용하지 않지만,
-        cache=True면 LeRobot 쪽에서 참조할 수 있게 self.calibration에 저장만 해둠.
-        """
         if cache:
             self.calibration.update(calibration_dict)
-
-
 
     # ---- read API (LeRobot 표준 key) ----
     def read(self, data_name: str, motor: str) -> Value:
@@ -163,11 +146,6 @@ class PiperMotorsBus(MotorsBusBase):
         raise ValueError(f"Unsupported data_name: {data_name}")
 
     def sync_read_all_states(self, motors: str | list[str] | None = None) -> dict[str, dict[str, float]]:
-        """
-        한 번에 pos/vel/torque를 가져오기.
-        SDK가 vel/torque를 못 주면 adapter에서 빈 dict 반환하게 하고, 여기서는 cache/0.0로 폴백.
-        반환: motor_name -> {'position':deg,'velocity':deg/s,'torque':...}
-        """
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 

@@ -1,6 +1,7 @@
 import logging
 import math
 import subprocess
+import time
 from typing import Optional
 from pathlib import Path
 
@@ -46,15 +47,33 @@ class PiperSdkAdapter:
 
         self._ensure_can_ready()
 
-        # Start CAN read thread etc. :contentReference[oaicite:9]{index=9}
         self.interface.ConnectPort(can_init=False, piper_init=True, start_thread=True)
 
-        # sanity check (will return a wrapper object; you can additionally validate Hz/time_stamp if you want)
-        msg = self.interface.GetArmJointMsgs()  # :contentReference[oaicite:10]{index=10}
+        msg = self.interface.GetArmJointMsgs()
         if msg is None:
             raise ConnectionError("GetArmJointMsgs() returned None after ConnectPort()")
 
         self._connected = True
+
+        try:
+            self.set_motion_mode(ctrl_mode=0x01, move_mode=0x01, speed=50, is_mit_mode=0x00)
+        except Exception as e:
+            logger.warning(f"[PIPER] MotionCtrl_2 failed: {e}")
+
+        # enable 재시도 + enabled 확인
+        for k in range(20):
+            try:
+                self.interface.EnableArm(7)
+            except Exception as e:
+                logger.warning(f"[PIPER] EnableArm failed (try {k}): {e}")
+
+            time.sleep(0.1)
+
+            if self.is_enabled():
+                logger.info("[PIPER] Arm enabled.")
+                break
+        else:
+            logger.warning("[PIPER] Arm not enabled after retries.")
 
     def disconnect(self, disable_torque: bool = True) -> None:
         if not self.is_connected:
@@ -71,6 +90,45 @@ class PiperSdkAdapter:
         self.interface.DisconnectPort()
 
         self._connected = False
+
+    def set_motion_mode(
+        self,
+        ctrl_mode: int = 0x01,
+        move_mode: int = 0x01,
+        speed: int = 50,
+        is_mit_mode: int = 0x00,
+        residence_time: int = 0,
+        installation_pos: int = 0x00,
+    ) -> None:
+        if not self.is_connected:
+            raise DeviceNotConnectedError("Device not connected")
+
+        self.interface.MotionCtrl_2(
+            ctrl_mode=ctrl_mode,
+            move_mode=move_mode,
+            move_spd_rate_ctrl=speed,
+            is_mit_mode=is_mit_mode,
+            residence_time=residence_time,
+            installation_pos=installation_pos,
+        )
+
+    def is_enabled(self) -> bool:
+        if not self.is_connected:
+            return False
+        info = self.interface.GetArmLowSpdInfoMsgs()
+        if info is None:
+            return False
+        try:
+            return (
+                info.motor_1.foc_status.driver_enable_status and
+                info.motor_2.foc_status.driver_enable_status and
+                info.motor_3.foc_status.driver_enable_status and
+                info.motor_4.foc_status.driver_enable_status and
+                info.motor_5.foc_status.driver_enable_status and
+                info.motor_6.foc_status.driver_enable_status
+            )
+        except AttributeError:
+            return False
 
     # ---- torque(enable/disable) ----
     def enable_torque(self, joint_ids: Optional[list[int]] = None) -> None:
@@ -185,10 +243,6 @@ class PiperSdkAdapter:
 
     # ---- write ----
     def send_joint_positions_deg(self, targets: dict[int, float]) -> None:
-        """
-        targets: {joint_id: target_deg}
-        Internally sends JointCtrl(j1..j6) with unit 0.001 degrees :contentReference[oaicite:17]{index=17}
-        """
         if not self.is_connected:
             raise DeviceNotConnectedError("Device not connected")
 

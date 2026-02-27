@@ -47,6 +47,21 @@ RATE_HZ = 100.0
 REC_HZ = 20.0
 REC_DT = 1.0 / REC_HZ
 
+# roll <-> yaw
+R_SWAP_XZ = np.array([
+    [0.0, 0.0, 1.0],
+    [0.0,-1.0, 0.0],
+    [1.0, 0.0, 0.0],
+], dtype=np.float64) 
+
+# 부호 교정
+R_FLIP_RP = np.array([
+    [-1.0,  0.0,  0.0],
+    [ 0.0, 1.0,  0.0],
+    [ 0.0,  0.0,  1.0],
+], dtype=np.float64)  # = Rz(pi), det=+1
+
+
 class EpisodeDataset:
     def __init__(self, out_dir: Path):
         self.out_dir = Path(out_dir)
@@ -115,8 +130,8 @@ def main():
     ee_task = mink.FrameTask(
         frame_name=ee_site,
         frame_type="site",
-        position_cost=3.0,
-        orientation_cost=0.2,
+        position_cost=1.0,
+        orientation_cost=0.5,
         lm_damping=1.0,
     )
     posture_task = mink.PostureTask(model=model, cost=POSTURE_COST)
@@ -174,7 +189,8 @@ def main():
 
             # controller 4x4 homogeneous transform
             T_ctrl = T_from_pos_quat_xyzw(frame.right_pose.pos, frame.right_pose.quat)
-
+            T_ctrl[:3,:3] = T_ctrl[:3,:3] @ (R_FLIP_RP @ R_SWAP_XZ)
+            
             # mocap
             mocap_id = model.body("target").mocapid
 

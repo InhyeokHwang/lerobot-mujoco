@@ -111,12 +111,12 @@ def main():
     # tasks
     left_task = mink.FrameTask(
         frame_name=ee_left, frame_type="site",
-        position_cost=3.0, orientation_cost=0.2,
+        position_cost=1.0, orientation_cost=1.0,
         lm_damping=1.0,
     )
     right_task = mink.FrameTask(
         frame_name=ee_right, frame_type="site",
-        position_cost=3.0, orientation_cost=0.2,
+        position_cost=1.0, orientation_cost=1.0,
         lm_damping=1.0,
     )
     posture_task = mink.PostureTask(model=model, cost=POSTURE_COST)

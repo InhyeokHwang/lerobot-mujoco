@@ -64,24 +64,20 @@ class PiperFollower(Robot):
     
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
-        """Camera features for observation space."""
         return {
             cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3) for cam in self.cameras
         }
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
-        """Combined observation features from motors and cameras."""
         return {**self._motors_ft, **self._cameras_ft}
 
     @cached_property
     def action_features(self) -> dict[str, type]:
-        """Action features."""
         return {f"{motor}.pos": float for motor in self.bus.motors}
     
     @property
     def is_connected(self) -> bool:
-        """Check if robot is connected."""
         return self.bus.is_connected and all(cam.is_connected for cam in self.cameras.values())
 
     @property
@@ -89,10 +85,6 @@ class PiperFollower(Robot):
         return self._calibrated
 
     def calibrate(self) -> None:
-        """
-        LeRobot 추상 메서드 구현용.
-        Piper는 SDK가 절대각을 제공하므로 별도 캘리브레이션 절차가 필요 없다고 가정.
-        """
         self._calibrated = True
 
     @check_if_already_connected
@@ -100,13 +92,15 @@ class PiperFollower(Robot):
         self.bus.connect()
         for cam in self.cameras.values():
             cam.connect()
-
         self.configure()
         self.bus.enable_torque()
-
+        try:
+            self.bus._sdk.set_motion_mode(ctrl_mode=0x01, move_mode=0x01, speed=50, is_mit_mode=0x00)
+            logger.info("[PIPER] MotionCtrl_2 re-applied after enable_torque()")
+        except Exception as e:
+            logger.warning(f"[PIPER] MotionCtrl_2 re-apply failed: {e}")
         if calibrate:
             self.calibrate()
-
         logger.info(f"{self} connected.")
 
     def configure(self) -> None:

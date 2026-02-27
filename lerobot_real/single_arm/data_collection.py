@@ -46,14 +46,29 @@ ORI_THRESHOLD = 1e-4
 RATE_HZ = 100.0
 
 # Data collection rate
-REC_HZ = 20.0
+REC_HZ = 100.0
 REC_DT = 1.0 / REC_HZ
 
 # Safety: per-step max delta clamp (deg per control tick)
-MAX_DQ_PER_STEP_DEG = 3.5  # ~3.5deg @100Hz, tune!
+MAX_DQ_PER_STEP_DEG = 3.5 
 
-# Optional: low-pass smoothing on command
-LPF_ALPHA = 0.35  # 0..1 (higher = less smoothing)
+HOME_REACH_TOL_DEG = 1.5  # tolerance degree    
+HOME_TIMEOUT_SEC = 12.0   # timeout
+HOME_SETTLE_SEC = 0.3     # settle
+
+# roll <-> yaw
+R_SWAP_XZ = np.array([
+    [0.0, 0.0, 1.0],
+    [0.0,-1.0, 0.0],
+    [1.0, 0.0, 0.0],
+], dtype=np.float64) 
+
+# 부호 교정
+R_FLIP_RP = np.array([
+    [-1.0,  0.0,  0.0],
+    [ 0.0, 1.0,  0.0],
+    [ 0.0,  0.0,  1.0],
+], dtype=np.float64)  # = Rz(pi), det=+1
 
 class EpisodeDataset:
     def __init__(self, out_dir: Path):
@@ -96,11 +111,6 @@ def clamp_step_deg(q_meas_deg: np.ndarray, q_cmd_deg: np.ndarray, max_dq_deg: fl
     dq = np.clip(q_cmd_deg - q_meas_deg, -max_dq_deg, max_dq_deg)
     return q_meas_deg + dq
 
-def lowpass(prev: Optional[np.ndarray], new: np.ndarray, alpha: float) -> np.ndarray:
-    if prev is None:
-        return new.copy()
-    return (1.0 - alpha) * prev + alpha * new
-
 def extract_qpos_deg_from_obs(obs: Dict) -> np.ndarray:
     # PiperFollower.get_observation() keys: "joint_1.pos" ... "joint_6.pos"
     return np.array([obs[f"joint_{i}.pos"] for i in range(1, 7)], dtype=np.float64)
@@ -108,6 +118,66 @@ def extract_qpos_deg_from_obs(obs: Dict) -> np.ndarray:
 def build_action_from_qpos_deg(q_cmd_deg: np.ndarray) -> Dict:
     # PiperFollower.send_action expects keys ending with ".pos"
     return {f"joint_{i}.pos": float(q_cmd_deg[i - 1]) for i in range(1, 7)}
+
+def get_home_qpos_deg(model: mujoco.MjModel, key_id: int) -> np.ndarray:
+    # key_qpos can be (nkey*nq,) OR (nkey, nq) depending on mujoco/python binding
+    kq = np.asarray(model.key_qpos)
+
+    if kq.ndim == 2:
+        q_home = kq[key_id]                 
+    else:
+        q_home = kq[key_id * model.nq : (key_id + 1) * model.nq]  
+
+    q_home = np.asarray(q_home, dtype=np.float64).reshape(-1)    
+    return np.rad2deg(q_home[:6]).reshape(6,)                     
+
+def pre_move_to_keyframe_home(
+    *,
+    model: mujoco.MjModel,
+    key_id: int,
+    robot: PiperFollower,
+    teleop: Quest3Teleop,
+    rate: RateLimiter,
+    tol_deg: float,
+    timeout_sec: float,
+    allow_abort: bool = True
+) -> bool:
+    q_goal_deg = get_home_qpos_deg(model, key_id)
+    print(f"[HOME] one-shot goal_deg = {np.round(q_goal_deg, 2)}")
+
+    robot.send_action(build_action_from_qpos_deg(q_goal_deg))
+
+    t_start = time.perf_counter()
+    prev_abort = False
+
+    while True:
+        # abort (B)
+        frame = teleop.read()
+        if allow_abort:
+            abort_now = bool(frame.right_state.button1)
+            abort = abort_now and (not prev_abort)
+            prev_abort = abort_now
+            if abort:
+                obs = robot.get_observation()
+                q_meas_deg = extract_qpos_deg_from_obs(obs)
+                robot.send_action(build_action_from_qpos_deg(q_meas_deg))
+                print("[HOME] aborted by button B. Holding current pose.")
+                return False
+
+        obs = robot.get_observation()
+        q_meas_deg = extract_qpos_deg_from_obs(obs)
+        err = np.abs(q_goal_deg - q_meas_deg)
+
+        if np.all(err <= tol_deg):
+            print(f"[HOME] reached (max_err={float(err.max()):.2f} deg).")
+            return True
+
+        if (time.perf_counter() - t_start) > timeout_sec:
+            print(f"[HOME] timeout after {timeout_sec:.1f}s (max_err={float(err.max()):.2f} deg). Holding.")
+            robot.send_action(build_action_from_qpos_deg(q_meas_deg))
+            return False
+
+        rate.sleep()
 
 def main():
     # dataset setup
@@ -142,8 +212,8 @@ def main():
     ee_task = mink.FrameTask(
         frame_name=ee_site,
         frame_type="site",
-        position_cost=3.0,
-        orientation_cost=0.2,
+        position_cost=1.0,
+        orientation_cost=0.5,
         lm_damping=1.0,
     )
     posture_task = mink.PostureTask(model=model, cost=POSTURE_COST)
@@ -186,7 +256,7 @@ def main():
         print("[RESET] episode buffer cleared + hold current pose")
 
         # Sync MuJoCo to measured q (FK)
-        data.qpos[:6] = np.deg2rad(q_meas_deg)  # NOTE: MuJoCo model likely uses radians for joints
+        data.qpos[:6] = np.deg2rad(q_meas_deg)  # MuJoCo model uses radians for joints
         mujoco.mj_forward(model, data)
         configuration.update(data.qpos)
 
@@ -202,8 +272,26 @@ def main():
         print("  - Hold squeeze: move target")
         print("  - Button B (button1): reset episode (hold + target reset)")
         print("  - Button A (button0): save episode (if recording)")
+        if key_id != -1:
+            print("  - BEFORE START: moving hardware to keyframe 'home' (press B to abort)")
 
-        hard_reset()
+            pre_move_to_keyframe_home(
+                model=model,
+                key_id=key_id,
+                robot=robot,
+                teleop=teleop,
+                rate=rate,
+                tol_deg=HOME_REACH_TOL_DEG,
+                timeout_sec=HOME_TIMEOUT_SEC,
+            )
+            # small settle
+            time.sleep(HOME_SETTLE_SEC)
+
+            # After homing attempt, sync Mujoco + anchor from measured pose
+            hard_reset()
+
+        else:
+            hard_reset()
 
         while episode_id < NUM_DEMO:
             frame_dt = rate.dt
@@ -216,21 +304,29 @@ def main():
             mujoco.mj_forward(model, data)
             configuration.update(data.qpos)
 
-            # Update posture target around current pose (real-hardware flow)
-            posture_task.set_target_from_configuration(configuration)
-
             frame = teleop.read()
 
-            # reset: right controller button B 
             reset_now = bool(frame.right_state.button1)
             reset = reset_now and (not prev_reset)
             prev_reset = reset_now
             if reset:
+                dataset.clear_episode_buffer()
+                record_flag = False
+                print("[RESET] recording aborted + buffer cleared")
+                pre_move_to_keyframe_home(
+                    model=model,
+                    key_id=key_id,
+                    robot=robot,
+                    teleop=teleop,
+                    rate=rate,
+                    tol_deg=HOME_REACH_TOL_DEG,
+                    timeout_sec=HOME_TIMEOUT_SEC,
+                )
+                time.sleep(HOME_SETTLE_SEC)
                 hard_reset()
                 rate.sleep()
                 continue
 
-            # done: right controller button A rising edge
             done_now = bool(frame.right_state.button0)
             done = done_now and (not prev_done)
             prev_done = done_now
@@ -243,26 +339,21 @@ def main():
                 hard_reset()
                 continue
 
-            # controller transform (4x4)
             T_ctrl = T_from_pos_quat_xyzw(frame.right_pose.pos, frame.right_pose.quat)
+            T_ctrl[:3,:3] = T_ctrl[:3,:3] @ (R_FLIP_RP @ R_SWAP_XZ)
 
-            # current mocap transform (4x4)
             T_moc_now = T_from_mocap(model, data, mocap_id)
 
-            # squeeze-gated teleop: controller delta -> mocap target
             ok, T_des = follow.update(frame.right_state.squeeze, T_ctrl, T_moc_now)
             if ok and T_des is not None:
                 set_mocap_from_T(data, mocap_id, T_des)
 
-            # record start condition: mocap being updated
             if (not record_flag) and ok:
                 record_flag = True
                 print("[DATASET] Start recording")
 
-
             ee_task.set_target(mink.SE3.from_mocap_name(model, data, "target"))
 
-            # Copy target for reached check
             target_pos = data.mocap_pos[mocap_id].copy()
             target_quat = data.mocap_quat[mocap_id].copy()
 
@@ -271,7 +362,6 @@ def main():
                 vel = mink.solve_ik(configuration, tasks, ik_dt, SOLVER, damping=DAMPING)
                 configuration.integrate_inplace(vel, ik_dt)
 
-                # Forward kinematics update only (no dynamics needed)
                 data.qpos[:] = configuration.q
                 mujoco.mj_forward(model, data)
 
@@ -284,12 +374,10 @@ def main():
                 if reached:
                     break
 
-            # IK result -> command (deg)
             q_cmd_rad = np.array(configuration.q, dtype=np.float64)[:6].copy()
             q_cmd_deg = np.rad2deg(q_cmd_rad)
 
             q_cmd_deg = clamp_step_deg(q_meas_deg, q_cmd_deg, MAX_DQ_PER_STEP_DEG)
-            q_cmd_deg = lowpass(last_q_cmd_deg, q_cmd_deg, LPF_ALPHA)
             last_q_cmd_deg = q_cmd_deg.copy()
 
             robot.send_action(build_action_from_qpos_deg(q_cmd_deg))
@@ -298,13 +386,11 @@ def main():
             if rec_accum >= REC_DT:
                 rec_accum -= REC_DT
 
-                # observation
                 obs_state = get_obs_state(model, data, site_id)
 
-                # target (mocap) pose
                 tpos = _vec1(data.mocap_pos[mocap_id])[:3]
                 tquat = _vec1(data.mocap_quat[mocap_id])[:4]
-                target_state = np.concatenate([tpos, tquat], axis=0)  # (7,)
+                target_state = np.concatenate([tpos, tquat], axis=0)
 
                 if record_flag:
                     dataset.add_frame(
@@ -317,6 +403,7 @@ def main():
                         },
                         task=TASK_NAME,
                     )
+
             rate.sleep()
 
     except KeyboardInterrupt:
@@ -326,7 +413,6 @@ def main():
             print("[INFO] Saving partial episode before exit.")
             dataset.save_episode()
         robot.disconnect()
-
 
 if __name__ == "__main__":
     main()
