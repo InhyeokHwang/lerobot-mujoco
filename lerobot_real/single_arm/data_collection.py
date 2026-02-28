@@ -46,7 +46,7 @@ ORI_THRESHOLD = 1e-4
 RATE_HZ = 100.0
 
 # Data collection rate
-REC_HZ = 100.0
+REC_HZ = 20.0
 REC_DT = 1.0 / REC_HZ
 
 # Safety: per-step max delta clamp (deg per control tick)
@@ -102,7 +102,7 @@ class EpisodeDataset:
 
 def get_obs_state(model: mujoco.MjModel, data: mujoco.MjData, site_id: int) -> np.ndarray:
     pos, quat = site_pose(model, data, site_id)  # (3,), (4,wxyz)
-    return np.concatenate([pos, quat], axis=0)   # (7,)
+    return np.concatenate([pos, quat], axis=0)  
 
 def _vec1(x) -> np.ndarray:
     return np.asarray(x, dtype=np.float64).reshape(-1)
@@ -131,39 +131,21 @@ def get_home_qpos_deg(model: mujoco.MjModel, key_id: int) -> np.ndarray:
     q_home = np.asarray(q_home, dtype=np.float64).reshape(-1)    
     return np.rad2deg(q_home[:6]).reshape(6,)                     
 
-def pre_move_to_keyframe_home(
+def move_to_keyframe_home(
     *,
     model: mujoco.MjModel,
     key_id: int,
     robot: PiperFollower,
-    teleop: Quest3Teleop,
     rate: RateLimiter,
     tol_deg: float,
     timeout_sec: float,
-    allow_abort: bool = True
 ) -> bool:
+    
     q_goal_deg = get_home_qpos_deg(model, key_id)
-    print(f"[HOME] one-shot goal_deg = {np.round(q_goal_deg, 2)}")
-
+    print(f"[HOME] goal_deg = {np.round(q_goal_deg, 2)}")
     robot.send_action(build_action_from_qpos_deg(q_goal_deg))
-
     t_start = time.perf_counter()
-    prev_abort = False
-
     while True:
-        # abort (B)
-        frame = teleop.read()
-        if allow_abort:
-            abort_now = bool(frame.right_state.button1)
-            abort = abort_now and (not prev_abort)
-            prev_abort = abort_now
-            if abort:
-                obs = robot.get_observation()
-                q_meas_deg = extract_qpos_deg_from_obs(obs)
-                robot.send_action(build_action_from_qpos_deg(q_meas_deg))
-                print("[HOME] aborted by button B. Holding current pose.")
-                return False
-
         obs = robot.get_observation()
         q_meas_deg = extract_qpos_deg_from_obs(obs)
         err = np.abs(q_goal_deg - q_meas_deg)
@@ -172,11 +154,11 @@ def pre_move_to_keyframe_home(
             print(f"[HOME] reached (max_err={float(err.max()):.2f} deg).")
             return True
 
-        if (time.perf_counter() - t_start) > timeout_sec:
+        if (time.perf_counter() - t_start) > timeout_sec: # timeout
             print(f"[HOME] timeout after {timeout_sec:.1f}s (max_err={float(err.max()):.2f} deg). Holding.")
+            # hold current pose
             robot.send_action(build_action_from_qpos_deg(q_meas_deg))
             return False
-
         rate.sleep()
 
 def main():
@@ -244,38 +226,16 @@ def main():
 
     def hard_reset():
         nonlocal record_flag, follow, last_q_cmd_deg
+
         dataset.clear_episode_buffer()
         record_flag = False
         follow = Controller(use_rotation=True, pos_scale=1.0, R_fix=follow.R_fix)
         last_q_cmd_deg = None
 
-        # Hold current hardware pose
-        obs = robot.get_observation()
-        q_meas_deg = extract_qpos_deg_from_obs(obs)
-        robot.send_action(build_action_from_qpos_deg(q_meas_deg))
-        print("[RESET] episode buffer cleared + hold current pose")
-
-        # Sync MuJoCo to measured q (FK)
-        data.qpos[:6] = np.deg2rad(q_meas_deg)  # MuJoCo model uses radians for joints
-        mujoco.mj_forward(model, data)
-        configuration.update(data.qpos)
-
-        # Reset mocap target to current EE pose (in MuJoCo)
-        mink.move_mocap_to_frame(model, data, "target", ee_site, "site")
-        mujoco.mj_forward(model, data)
-
-        # Anchor posture to current pose
-        posture_task.set_target_from_configuration(configuration)
-
-    try:
-        print("[INFO] Connected. Right controller only.")
-        print("  - Hold squeeze: move target")
-        print("  - Button B (button1): reset episode (hold + target reset)")
-        print("  - Button A (button0): save episode (if recording)")
         if key_id != -1:
-            print("  - BEFORE START: moving hardware to keyframe 'home' (press B to abort)")
+            print("[RESET] moving to keyframe 'home'...")
 
-            pre_move_to_keyframe_home(
+            move_to_keyframe_home(
                 model=model,
                 key_id=key_id,
                 robot=robot,
@@ -284,12 +244,42 @@ def main():
                 tol_deg=HOME_REACH_TOL_DEG,
                 timeout_sec=HOME_TIMEOUT_SEC,
             )
-            # small settle
             time.sleep(HOME_SETTLE_SEC)
 
-            # After homing attempt, sync Mujoco + anchor from measured pose
-            hard_reset()
+        # ------------------------------
+        # Sync MuJoCo with measured pose
+        # ------------------------------
+        obs = robot.get_observation()
+        q_meas_deg = extract_qpos_deg_from_obs(obs)
 
+        data.qpos[:6] = np.deg2rad(q_meas_deg)
+        mujoco.mj_forward(model, data)
+        configuration.update(data.qpos)
+
+        # ------------------------------
+        # Reset mocap target to EE
+        # ------------------------------
+        mink.move_mocap_to_frame(model, data, "target", ee_site, "site")
+        mujoco.mj_forward(model, data)
+
+        # ------------------------------
+        # Anchor posture
+        # ------------------------------
+        posture_task.set_target_from_configuration(configuration)
+
+        print("[RESET] complete.")
+
+    try:
+        print("[INFO] Connected. (Right Controller)")
+        print("  - Hold squeeze: move target")
+        print("  - Button B (button1): reset episode (hold + target reset)")
+        print("  - Button A (button0): save episode (if recording)")
+        if key_id != -1:
+            print("  - BEFORE START: moving hardware to keyframe 'home' (press B to abort)")
+            # move to home + sync Mujoco + anchor from measured pose
+            hard_reset()
+            # small settle
+            time.sleep(HOME_SETTLE_SEC)
         else:
             hard_reset()
 
@@ -313,7 +303,7 @@ def main():
                 dataset.clear_episode_buffer()
                 record_flag = False
                 print("[RESET] recording aborted + buffer cleared")
-                pre_move_to_keyframe_home(
+                move_to_keyframe_home(
                     model=model,
                     key_id=key_id,
                     robot=robot,

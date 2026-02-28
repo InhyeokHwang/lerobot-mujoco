@@ -98,6 +98,24 @@ def get_obs_state(model: mujoco.MjModel, data: mujoco.MjData, site_id: int) -> n
 def _vec1(x) -> np.ndarray:
     return np.asarray(x, dtype=np.float64).reshape(-1)
 
+def gripper_step(
+    *, model: mujoco.MjModel, data: mujoco.MjData, cmd: float, state: Dict,
+    init: bool = False, act_name: str = "gripper"
+) -> None:
+    gripper_value = float(np.clip(cmd, 0.0, 1.0))
+    gripper_value = 1.0 - gripper_value # invert
+
+    if init or ("act_id" not in state):
+        state["act_id"] = model.actuator(act_name).id
+        low, high = model.actuator_ctrlrange[state["act_id"]]
+        state["low"] = float(low)
+        state["high"] = float(high)
+
+    act_id = int(state["act_id"])
+    low = float(state["low"])
+    high = float(state["high"])
+    data.ctrl[act_id] = low + (high - low) * gripper_value
+
 def main():
     # dataset setup 
     TASK_NAME = "piper_single_arm_teleop"
@@ -138,7 +156,12 @@ def main():
     tasks = [ee_task, posture_task]
     posture_task.set_target_from_configuration(configuration)
 
+    # joint -> actuator
     joint2act = build_ctrl_map_for_joints(model)
+
+    # gripper setup
+    grip_state: Dict = {} #cache
+    gripper_step(model=model, data=data, cmd=0.0, state=grip_state, init=True) # 캐시 초기화는 처음만
 
     # init mocap target to current EE
     mink.move_mocap_to_frame(model, data, "target", ee_site, "site")
@@ -156,7 +179,7 @@ def main():
     record_flag = False
 
     def hard_reset():
-        nonlocal record_flag, follow
+        nonlocal record_flag, follow, grip_state
         if key_id != -1:
             mujoco.mj_resetDataKeyframe(model, data, key_id)
         else:
@@ -165,6 +188,7 @@ def main():
         configuration.update(data.qpos)
 
         posture_task.set_target_from_configuration(configuration)
+        gripper_step(model=model, data=data, cmd=0.0, state=grip_state, init=False)
         mink.move_mocap_to_frame(model, data, "target", ee_site, "site")
         mujoco.mj_forward(model, data)
 
@@ -186,6 +210,9 @@ def main():
 
             # controller input
             frame = teleop.read()
+
+            # gripper
+            grip_cmd = float(np.clip(float(frame.right_state.trigger), 0.0, 1.0))
 
             # controller 4x4 homogeneous transform
             T_ctrl = T_from_pos_quat_xyzw(frame.right_pose.pos, frame.right_pose.quat)
@@ -245,6 +272,10 @@ def main():
                 configuration.integrate_inplace(vel, ik_dt)
 
                 apply_configuration(model, data, configuration, joint2act=joint2act)
+
+                # gripper ctrl 
+                gripper_step(model=model, data=data, cmd=grip_cmd, state=grip_state, init=False)
+
                 mujoco.mj_step(model, data)
 
                 reached = check_reached_single(
